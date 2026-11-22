@@ -1,0 +1,6 @@
+GIB = 1024**3
+GB = 10**9
+RESERVES = {"Discrete GPU": 0.90, "Apple Silicon": 0.67, "CPU / integrated graphics": 0.75}
+CONTEXTS = (4096, 8192, 16384, 32768)
+DEFAULT_OVERHEAD = 0.15
+DEFAULT_QUANT_ALLOWANCE = 0.10
