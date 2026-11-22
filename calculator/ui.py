@@ -82,7 +82,7 @@ def hub_picker():
 
 
 def model_inputs():
-    st.subheader("01 / Start with your model")
+    st.subheader("01 / Start with your model", anchor="start-with-your-model")
     st.caption("Start with the model size. Hardware details are optional and come later.")
     hub_picker()
     meta = st.session_state.get("metadata")
@@ -139,7 +139,7 @@ def model_inputs():
 
 def show_requirements(model, workload):
     result = estimate(model, workload)
-    st.subheader("02 / Your memory picture")
+    st.subheader("02 / Your memory picture", anchor="your-memory-picture")
     st.caption("Planning estimates for inference, not training. Values below use GiB (1 GiB = 1,073,741,824 bytes).")
     st.caption(MEMORY_CAVEAT)
     if not model.architecture_known:
@@ -150,7 +150,7 @@ def show_requirements(model, workload):
     for col, label, value in zip(cols, ["Total inference memory", "Model weights", "Context / KV cache", "Runtime overhead"], [result.total, result.weights, result.cache, result.overhead]):
         col.metric(label, memory(value))
     frame = pd.DataFrame({"Component": ["Weights", "KV cache", "Runtime overhead"], "GiB": [result.weights / GIB, result.cache / GIB, result.overhead / GIB], "Memory": ["Estimated memory"] * 3})
-    chart = alt.Chart(frame).mark_bar(size=34).encode(x=alt.X("GiB:Q", title="Memory (GiB)"), y=alt.Y("Memory:N", title=None, axis=None), color=alt.Color("Component:N", scale=alt.Scale(domain=["Weights", "KV cache", "Runtime overhead"], range=["#B86A4F", "#929D83", "#D9CBB7"]), legend=alt.Legend(orient="bottom", title=None)), tooltip=["Component", alt.Tooltip("GiB", format=".2f")]).properties(height=90).configure_view(strokeWidth=0).configure_axis(gridColor="#E8E1D7", labelColor="#756E63", titleColor="#756E63")
+    chart = alt.Chart(frame).mark_bar(size=34).encode(x=alt.X("GiB:Q", title="Memory (GiB)"), y=alt.Y("Memory:N", title=None, axis=None), color=alt.Color("Component:N", scale=alt.Scale(domain=["Weights", "KV cache", "Runtime overhead"], range=["#39575E", "#D7BD66", "#CC9586"]), legend=alt.Legend(orient="bottom", title=None)), tooltip=["Component", alt.Tooltip("GiB", format=".2f")]).properties(height=90).configure_view(strokeWidth=0).configure_axis(gridColor="#DED9CB", labelColor="#5E6258", titleColor="#5E6258")
     st.altair_chart(chart, use_container_width=True)
     st.markdown("**Estimated advertised memory needed**")
     for col, (kind, fraction) in zip(st.columns(3), RESERVES.items()):
@@ -169,7 +169,7 @@ def show_requirements(model, workload):
 
 
 def hardware_panel(model, workload):
-    st.subheader("03 / Meet your hardware")
+    st.subheader("03 / Meet your hardware", anchor="meet-your-hardware")
     st.caption("Enter your own specifications. This hosted app cannot inspect your computer and never compares against the hosting server.")
     if not st.checkbox("Add my hardware specifications", key="add_hardware"):
         return None, None
@@ -250,3 +250,4 @@ def render():
     st.download_button("Download estimate · JSON", json.dumps(report, indent=2), "modelcompass-estimate.json", "application/json")
     st.caption("No model weights are downloaded. Your specifications stay in this session; this app does not persist them.")
     render_footer()
+
