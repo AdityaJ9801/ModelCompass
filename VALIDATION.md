@@ -1,5 +1,16 @@
 # Reference validation and detailed test cases
 
+## Gated-access regression update
+
+The full suite now passes **77 tests**. New mocked checks cover anonymous versus
+authenticated requests, authentication on metadata and configuration fetches,
+cross-origin redirect credential stripping, 401/403/404/429/503 handling at both
+request stages, transient recovery, exhausted retries, malformed/oversized JSON,
+shared-cache bypass, token clearing, session isolation, report exclusion, and
+retention of the previous model after a failed selection. No real credentials
+or gated model downloads were used. The numerical reference evaluation below
+remains a formula validation, not a physical inference benchmark.
+
 Validated on 22 November 2026. This validates architecture extraction, arithmetic,
 and policy behavior against first-party metadata. It does **not** establish actual
 peak RAM/VRAM, loading success, or tokens/sec on physical machines.

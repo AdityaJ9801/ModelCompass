@@ -1,6 +1,7 @@
 import os
 
-# Bound Hub HTTP calls, including model search. No local saved credentials are used.
+# Bound Hub HTTP calls. Credentials are optional and supplied per visitor session;
+# local saved credentials and application-owner tokens are never used implicitly.
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
 

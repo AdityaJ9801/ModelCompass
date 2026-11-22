@@ -1,14 +1,42 @@
-"""Public Hub metadata only. Never loads model code or weight files."""
+"""Session-scoped optional authentication; metadata only, never weights."""
 from dataclasses import dataclass, asdict
 import json
+import time
 import httpx
 from huggingface_hub import HfApi, hf_hub_url
+from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
+
+HUB_ENDPOINT = "https://huggingface.co"
 
 SUPPORTED = {"llama", "mistral", "qwen2", "qwen3", "gemma", "gemma2", "gemma3_text", "phi3", "phi", "gpt_neox", "gpt2", "opt"}
 
 
 class MetadataError(Exception):
-    pass
+    def __init__(self, message, reason="unknown", retryable=False):
+        super().__init__(message)
+        self.reason = reason
+        self.retryable = retryable
+
+
+def classify_error(exc, stage):
+    """Return safe messages only: upstream errors can contain request details."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in (401, 403):
+        return MetadataError("Access denied. Accept this model's terms and obtain approval on Hugging Face, then use a valid read token from that approved account. Manual entry still works.", "access_denied")
+    if status == 404:
+        message = "This repository has no accessible config.json at this revision." if stage == "configuration" else "Repository not found or not accessible to this account."
+        return MetadataError(message + " Manual entry still works.", "not_found")
+    if status == 429:
+        return MetadataError("Hugging Face is rate limiting requests. Wait and try again. Manual entry still works.", "rate_limited", True)
+    if status is not None and 500 <= status <= 599:
+        return MetadataError("Hugging Face is temporarily unavailable. Try again later. Manual entry still works.", "server_error", True)
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return MetadataError("The Hugging Face request timed out. Try again. Manual entry still works.", "timeout", True)
+    if isinstance(exc, httpx.TransportError):
+        return MetadataError("Could not connect to Hugging Face. Check the connection and try again. Manual entry still works.", "connection", True)
+    if isinstance(exc, (ValueError, TypeError, KeyError, AttributeError)):
+        return MetadataError("The model configuration or metadata could not be interpreted. Manual entry still works.", "invalid_metadata")
+    return MetadataError("The model metadata could not be processed. Manual entry still works.", "unknown")
 
 
 @dataclass
@@ -82,13 +110,15 @@ def search_models(query="", author="", library="", sort="downloads", minimum=0.0
         raise MetadataError("Hugging Face search is unavailable. Try again later or enter the model manually.") from exc
 
 
-def load_model(repo_id):
-    try:
-        info = HfApi(token=False).model_info(repo_id, timeout=10)
+def _load_model_once(repo_id, token, stage):
+        info = HfApi(endpoint=HUB_ENDPOINT, token=token).model_info(repo_id, timeout=10)
+        stage[0] = "configuration"
         # Bounded streamed JSON fetch, pinned to the metadata revision.
-        url = hf_hub_url(repo_id, "config.json", revision=info.sha)
-        with httpx.stream("GET", url, timeout=10, follow_redirects=True) as response:
-            response.raise_for_status()
+        url = hf_hub_url(repo_id, "config.json", revision=info.sha, endpoint=HUB_ENDPOINT)
+        # Per-request headers only. Hub's HTTPX client strips Authorization on
+        # cross-origin redirects; no login(), disk downloads, or global auth state.
+        with get_session().stream("GET", url, headers=build_hf_headers(token=token), timeout=10, follow_redirects=True) as response:
+            hf_raise_for_status(response)
             data = bytearray()
             for chunk in response.iter_bytes():
                 data.extend(chunk)
@@ -102,7 +132,33 @@ def load_model(repo_id):
         raw = {"safetensors": {"total": getattr(safe, "total", None)},
                "cardData": card.to_dict() if card else {}, "sha": info.sha}
         return asdict(normalize(repo_id, config, raw))
-    except MetadataError:
-        raise
-    except Exception as exc:
-        raise MetadataError("Could not read this model's public configuration. It may be gated, missing, or temporarily unavailable. Manual entry still works.") from exc
+
+
+def load_model(repo_id, token=None):
+    """Load without caching. Callers must never share authenticated results."""
+    auth = token.strip() if isinstance(token, str) and token.strip() else False
+    failure = None
+    for attempt in range(3):
+        stage = ["metadata"]
+        try:
+            return _load_model_once(repo_id, auth, stage)
+        except MetadataError as exc:
+            failure = exc
+            break
+        except Exception as exc:
+            failure = classify_error(exc, stage[0])
+            if not failure.retryable or attempt == 2:
+                break
+            retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After")
+            delay = 2**attempt
+            if retry_after:
+                try:
+                    delay = max(delay, float(retry_after))
+                except ValueError:
+                    break  # A dated retry instruction is best handled by the user.
+            if delay > 10:
+                break
+            time.sleep(delay)
+    # Raise outside the exception handler to avoid retaining sensitive requests
+    # in the exposed exception chain.
+    raise failure from None

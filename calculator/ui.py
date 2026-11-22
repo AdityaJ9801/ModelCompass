@@ -6,9 +6,13 @@ import streamlit as st
 from .config import GIB, GB, RESERVES, CONTEXTS, DEFAULT_OVERHEAD, DEFAULT_QUANT_ALLOWANCE
 from .core import Model, Workload, Hardware, estimate, compare, at_context
 from .hub import search_models, load_model, MetadataError
+from .access import clear_access, forget_authenticated_model, load_for_session
 
 cached_search = st.cache_data(ttl=3600, max_entries=128, show_spinner=False)(search_models)
-cached_load = st.cache_data(ttl=3600, max_entries=128, show_spinner=False)(load_model)
+@st.cache_data(ttl=3600, max_entries=128, show_spinner=False)
+def cached_load(repo_id):
+    # This cache entrypoint deliberately has no credential parameter.
+    return load_model(repo_id)
 MEMORY_CAVEAT = "Actual memory consumption varies by quantization format, runtime, attention backend, and hardware. These results are planning estimates."
 
 
@@ -19,6 +23,12 @@ def memory(value):
 def hub_picker():
     with st.expander("Search Hugging Face — optional"):
         st.caption("Public text-generation models only. We read small metadata files, never model weights.")
+        st.markdown("**Restricted-model access — optional**")
+        st.caption("For gated models such as Llama, accept the publisher's terms and receive access approval on Hugging Face first. A token alone does not grant access. Use a read token from your approved account; it is sent to this app's server for this session only.")
+        st.text_input("Hugging Face access token", type="password", key="hf_token",
+                      on_change=forget_authenticated_model, args=(st.session_state,))
+        st.button("Clear token", key="clear_token", on_click=clear_access, args=(st.session_state,))
+        st.caption("Search remains public. Authenticated model details stay in this session and are excluded from shared caches and downloads.")
         with st.form("hub_search"):
             query = st.text_input("Model name or keyword", placeholder="e.g. Llama, Qwen, Gemma")
             a, b, c = st.columns(3)
@@ -48,8 +58,9 @@ def hub_picker():
             if st.button("Use this model"):
                 try:
                     with st.spinner("Reading model specifications…"):
-                        meta = cached_load(selected)
+                        meta, authenticated = load_for_session(selected, st.session_state.get("hf_token"), cached_load, load_model)
                     st.session_state.metadata = meta
+                    st.session_state.metadata_authenticated = authenticated
                     if meta["supported"]:
                         st.session_state.params = float(meta["parameters_b"] or 7.0)
                         st.session_state.layers = int(meta["layers"] or 32)
@@ -61,6 +72,10 @@ def hub_picker():
                         st.session_state.confirm_params = False
                 except MetadataError as exc:
                     st.warning(str(exc))
+                    if exc.reason == "access_denied":
+                        st.link_button("Open model page to request access", f"https://huggingface.co/{selected}")
+                    previous = st.session_state.get("metadata")
+                    st.caption(f"Results still use {previous['repo_id']}." if previous else "Results still use your current manual inputs.")
         elif rows == []:
             st.info("No matching models in this result batch. Broaden the filters or use manual entry.")
 
@@ -77,6 +92,7 @@ def model_inputs():
         st.caption(f"License: {meta['license'] or 'not supplied'} · Architecture: {meta['architecture']}")
         st.caption(f"Repository quantization: {meta['quantization'] or 'not specified'}. Your precision selection below is a planning scenario, not confirmation of an available artifact.")
         if st.button("Clear selected model and use manual entry"):
+            forget_authenticated_model(st.session_state)
             st.session_state.pop("metadata", None)
             st.session_state.needs_params = False
             st.rerun()
@@ -225,6 +241,9 @@ def render():
     st.divider()
     hardware, comparison = hardware_panel(model, workload)
     alternatives(model, workload, hardware)
+    if st.session_state.get("metadata_authenticated"):
+        st.caption("Downloads are disabled for authenticated model details. Clear the selection to create a manual estimate for export.")
+        return
     report = {"schema_version": 1, "units": "bytes unless named otherwise", "model": asdict(model), "workload": asdict(workload), "estimate": asdict(result), "hardware": asdict(hardware) if hardware else None, "comparison": asdict(comparison) if comparison else None, "metadata": st.session_state.get("metadata"), "assumptions": {"usable_memory_defaults": RESERVES, "cache_override": "Total budget at selected context, scaled linearly" if workload.cache_override_gib else None, "speed": "Weight-streaming ceiling only; not measured throughput", "scope": "Single-machine dense text inference; runtime compatibility is not guaranteed"}}
     report["assumptions"]["memory_variability"] = MEMORY_CAVEAT
     st.download_button("Download estimate · JSON", json.dumps(report, indent=2), "modelcompass-estimate.json", "application/json")

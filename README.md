@@ -75,7 +75,18 @@ Open the local URL printed by Streamlit. After dependencies are installed, manua
 3. Select `app.py` as the entrypoint and choose Python 3.12.
 4. Deploy using the included `requirements.txt` and `.streamlit/config.toml`.
 
-Hosting requires no GPU or Hugging Face token. Public metadata is cached for one hour; visitor inputs remain in separate Streamlit sessions. The app does not persist hardware specifications or reports. Gated or unavailable repositories have a manual-entry fallback. Credentials should never be committed; `.streamlit/secrets.toml` is ignored by Git.
+Hosting requires no GPU or shared Hugging Face token. Public metadata is cached for one hour; visitor inputs remain in separate Streamlit sessions. The app does not persist hardware specifications or reports. Credentials should never be committed; `.streamlit/secrets.toml` is ignored by Git.
+
+### Restricted models such as Meta Llama
+
+1. Open the model's Hugging Face page, accept its terms, and obtain any required access approval.
+2. Create a read token with access to that repository in your own Hugging Face account.
+3. Expand **Search Hugging Face**, enter it in the **Hugging Face access token** password field, then select **Use this model**.
+4. Use **Clear token** when finished. This also clears authenticated model details and their populated model inputs. Changing the token has the same model-clearing effect.
+
+A token alone does not grant publisher approval. The token is sent to the app server and used for both metadata and configuration requests during your session. Search remains anonymous. Authenticated results bypass the public cache and are never saved to disk. Downloads are disabled while an authenticated model is selected so restricted details cannot enter exported reports. No shared app-owner token is used.
+
+Access denied, missing configuration, timeout, and rate-limit failures have specific messages. Access-denied messages link to the model page. Transient failures receive at most three attempts with bounded backoff; access failures are not retried. A failed selection preserves the current valid model. Manual entry remains available.
 
 ## How the estimate works
 
@@ -110,7 +121,7 @@ Manual entry initially uses an **illustrative** architecture: 32 layers, 8 KV he
 
 **Actual memory consumption varies by quantization format, runtime, attention backend, and hardware. These results are planning estimates.**
 
-The latest recorded evaluation passed **58 automated tests**, including **108 simulated hardware comparisons** within the source-based matrix. Three official model configurations are preserved with revision hashes. The standard KV-cache formula also matches Hugging Face's published worked example.
+The latest recorded suite passed **77 automated tests**, including authentication and UI regressions and **108 simulated hardware comparisons** within the source-based matrix. Three official model configurations are preserved with revision hashes. The standard KV-cache formula also matches Hugging Face's published worked example. Gated-access tests use mocked requests; live gated verification requires an approved account.
 
 This validates the tested arithmetic and behavior. Physical inference benchmarks have not yet been run, so the project does not claim a measured prediction-error percentage across real computers.
 
@@ -134,6 +145,7 @@ calculator/
   hub.py                Metadata search and configuration normalization
   ui.py                 Input panels, charts, comparisons, and JSON reports
   config.py             Units and calculation defaults
+  access.py             Session-only authentication routing and cleanup
 tests/
   fixtures/             Revision-pinned official model metadata
 scripts/
