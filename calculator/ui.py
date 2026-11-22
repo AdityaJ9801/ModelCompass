@@ -7,6 +7,7 @@ from .config import GIB, GB, RESERVES, CONTEXTS, DEFAULT_OVERHEAD, DEFAULT_QUANT
 from .core import Model, Workload, Hardware, estimate, compare, at_context
 from .hub import search_models, load_model, MetadataError
 from .access import clear_access, forget_authenticated_model, load_for_session
+from .theme import render_header, render_footer
 
 cached_search = st.cache_data(ttl=3600, max_entries=128, show_spinner=False)(search_models)
 @st.cache_data(ttl=3600, max_entries=128, show_spinner=False)
@@ -81,7 +82,7 @@ def hub_picker():
 
 
 def model_inputs():
-    st.subheader("1 · Describe your model")
+    st.subheader("01 / Start with your model")
     st.caption("Start with the model size. Hardware details are optional and come later.")
     hub_picker()
     meta = st.session_state.get("metadata")
@@ -138,7 +139,7 @@ def model_inputs():
 
 def show_requirements(model, workload):
     result = estimate(model, workload)
-    st.subheader("2 · Memory your model needs")
+    st.subheader("02 / Your memory picture")
     st.caption("Planning estimates for inference, not training. Values below use GiB (1 GiB = 1,073,741,824 bytes).")
     st.caption(MEMORY_CAVEAT)
     if not model.architecture_known:
@@ -149,7 +150,7 @@ def show_requirements(model, workload):
     for col, label, value in zip(cols, ["Total inference memory", "Model weights", "Context / KV cache", "Runtime overhead"], [result.total, result.weights, result.cache, result.overhead]):
         col.metric(label, memory(value))
     frame = pd.DataFrame({"Component": ["Weights", "KV cache", "Runtime overhead"], "GiB": [result.weights / GIB, result.cache / GIB, result.overhead / GIB], "Memory": ["Estimated memory"] * 3})
-    chart = alt.Chart(frame).mark_bar(size=40).encode(x=alt.X("GiB:Q", title="Memory (GiB)"), y=alt.Y("Memory:N", title=None), color=alt.Color("Component:N", scale=alt.Scale(range=["#0D9488", "#60A5FA", "#CBD5E1"])), tooltip=["Component", alt.Tooltip("GiB", format=".2f")]).properties(height=110)
+    chart = alt.Chart(frame).mark_bar(size=34).encode(x=alt.X("GiB:Q", title="Memory (GiB)"), y=alt.Y("Memory:N", title=None, axis=None), color=alt.Color("Component:N", scale=alt.Scale(domain=["Weights", "KV cache", "Runtime overhead"], range=["#B86A4F", "#929D83", "#D9CBB7"]), legend=alt.Legend(orient="bottom", title=None)), tooltip=["Component", alt.Tooltip("GiB", format=".2f")]).properties(height=90).configure_view(strokeWidth=0).configure_axis(gridColor="#E8E1D7", labelColor="#756E63", titleColor="#756E63")
     st.altair_chart(chart, use_container_width=True)
     st.markdown("**Estimated advertised memory needed**")
     for col, (kind, fraction) in zip(st.columns(3), RESERVES.items()):
@@ -168,7 +169,7 @@ def show_requirements(model, workload):
 
 
 def hardware_panel(model, workload):
-    st.subheader("3 · Compare with your hardware — optional")
+    st.subheader("03 / Meet your hardware")
     st.caption("Enter your own specifications. This hosted app cannot inspect your computer and never compares against the hosting server.")
     if not st.checkbox("Add my hardware specifications", key="add_hardware"):
         return None, None
@@ -231,20 +232,21 @@ def alternatives(model, workload, hardware):
 
 
 def render():
-    st.markdown("<style>.block-container{max-width:1180px;padding-top:2rem} div[data-testid='stMetric']{background:white;border:1px solid #E2E8F0;padding:18px;border-radius:14px} h1{letter-spacing:-1.4px}</style>", unsafe_allow_html=True)
-    st.caption("MODELCOMPASS  /  LOCAL LLM PLANNING")
-    st.title("Know what your model needs.")
-    st.write("Turn a model size into clear memory requirements. Then, if you want, see how it fits your hardware.")
-    model, workload = model_inputs()
-    st.divider()
-    result = show_requirements(model, workload)
-    st.divider()
-    hardware, comparison = hardware_panel(model, workload)
-    alternatives(model, workload, hardware)
+    render_header()
+    with st.container(key="model_panel"):
+        model, workload = model_inputs()
+    with st.container(key="results_panel"):
+        result = show_requirements(model, workload)
+    with st.container(key="hardware_panel"):
+        hardware, comparison = hardware_panel(model, workload)
+    with st.container(key="alternatives_panel"):
+        alternatives(model, workload, hardware)
     if st.session_state.get("metadata_authenticated"):
         st.caption("Downloads are disabled for authenticated model details. Clear the selection to create a manual estimate for export.")
+        render_footer()
         return
     report = {"schema_version": 1, "units": "bytes unless named otherwise", "model": asdict(model), "workload": asdict(workload), "estimate": asdict(result), "hardware": asdict(hardware) if hardware else None, "comparison": asdict(comparison) if comparison else None, "metadata": st.session_state.get("metadata"), "assumptions": {"usable_memory_defaults": RESERVES, "cache_override": "Total budget at selected context, scaled linearly" if workload.cache_override_gib else None, "speed": "Weight-streaming ceiling only; not measured throughput", "scope": "Single-machine dense text inference; runtime compatibility is not guaranteed"}}
     report["assumptions"]["memory_variability"] = MEMORY_CAVEAT
     st.download_button("Download estimate · JSON", json.dumps(report, indent=2), "modelcompass-estimate.json", "application/json")
     st.caption("No model weights are downloaded. Your specifications stay in this session; this app does not persist them.")
+    render_footer()
