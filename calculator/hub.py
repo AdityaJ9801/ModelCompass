@@ -97,11 +97,13 @@ def search_models(query="", author="", library="", sort="downloads", minimum=0.0
         models = api.list_models(search=query or None, author=author or None,
                                  filter=library or None, pipeline_tag="text-generation",
                                  sort=sort, limit=30,
-                                 expand=["safetensors", "downloads", "likes", "library_name"])
+                                 expand=["safetensors", "downloads", "likes", "library_name", "gguf"])
         rows = []
         for model in models:
             safe = getattr(model, "safetensors", None)
             total = getattr(safe, "total", None) if safe else None
+            gguf = getattr(model, "gguf", None) or {}
+            total = gguf.get("total") or total
             count = total / 1e9 if total else None
             if (count is None and include_unknown) or (count is not None and minimum <= count <= maximum):
                 rows.append({"id": model.id, "parameters_b": count})
@@ -110,28 +112,92 @@ def search_models(query="", author="", library="", sort="downloads", minimum=0.0
         raise MetadataError("Hugging Face search is unavailable. Try again later or enter the model manually.") from exc
 
 
-def _load_model_once(repo_id, token, stage):
-        info = HfApi(endpoint=HUB_ENDPOINT, token=token).model_info(repo_id, timeout=10)
-        stage[0] = "configuration"
-        # Bounded streamed JSON fetch, pinned to the metadata revision.
-        url = hf_hub_url(repo_id, "config.json", revision=info.sha, endpoint=HUB_ENDPOINT)
-        # Per-request headers only. Hub's HTTPX client strips Authorization on
-        # cross-origin redirects; no login(), disk downloads, or global auth state.
-        with get_session().stream("GET", url, headers=build_hf_headers(token=token), timeout=10, follow_redirects=True) as response:
-            hf_raise_for_status(response)
-            data = bytearray()
-            for chunk in response.iter_bytes():
-                data.extend(chunk)
-                if len(data) > 2 * 1024 * 1024:
-                    raise MetadataError("Configuration exceeds the 2 MiB metadata limit. Use manual entry.")
-        config = json.loads(data)
-        if not isinstance(config, dict):
-            raise ValueError("Invalid config")
-        safe = getattr(info, "safetensors", None)
+def _read_config(repo_id, info, token):
+    url = hf_hub_url(repo_id, "config.json", revision=info.sha, endpoint=HUB_ENDPOINT)
+    with get_session().stream("GET", url, headers=build_hf_headers(token=token), timeout=10, follow_redirects=True) as response:
+        hf_raise_for_status(response)
+        data = bytearray()
+        for chunk in response.iter_bytes():
+            data.extend(chunk)
+            if len(data) > 2 * 1024 * 1024:
+                raise MetadataError("Configuration exceeds the 2 MiB metadata limit. Use manual entry.")
+    config = json.loads(data)
+    if not isinstance(config, dict):
+        raise ValueError("Invalid config")
+    return config
+
+
+def _load_model_once(repo_id, token, stage, visited=()):
+    if repo_id in visited or len(visited) >= 3:
+        raise MetadataError("Base-model links form a cycle or exceed the lookup limit.", "base_limit")
+    info = HfApi(endpoint=HUB_ENDPOINT, token=token).model_info(repo_id, timeout=10)
+    stage[0] = "configuration"
+    fallback = False
+    try:
+        config = _read_config(repo_id, info, token)
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status not in (401, 403, 404):
+            raise
+        config = getattr(info, "config", None) or {}
+        gguf = getattr(info, "gguf", None) or {}
+        if not isinstance(config, dict) or not isinstance(gguf, dict):
+            raise
+        config = {**config}
+        if gguf.get("architecture"):
+            config.setdefault("model_type", gguf["architecture"])
+        if gguf.get("context_length"):
+            config.setdefault("max_position_embeddings", gguf["context_length"])
         card = getattr(info, "card_data", None)
-        raw = {"safetensors": {"total": getattr(safe, "total", None)},
-               "cardData": card.to_dict() if card else {}, "sha": info.sha}
-        return asdict(normalize(repo_id, config, raw))
+        card = card.to_dict() if card else {}
+        if not config and not card.get("base_model"):
+            raise
+        fallback = True
+    safe = getattr(info, "safetensors", None)
+    card = getattr(info, "card_data", None)
+    card = card.to_dict() if card else {}
+    raw = {"safetensors": {"total": getattr(safe, "total", None)}, "cardData": card, "sha": info.sha}
+    result = asdict(normalize(repo_id, config, raw))
+    gguf = getattr(info, "gguf", None) or {}
+    if isinstance(gguf, dict) and isinstance(gguf.get("total"), (int, float)) and gguf["total"] > 0:
+        result["parameters_b"] = gguf["total"] / 1e9
+        result["provenance"]["parameters"] = "Hub GGUF parameter metadata"
+    base = card.get("base_model")
+    if isinstance(base, list):
+        base = base[0] if len(base) == 1 else None
+    # Follow explicit lineage only. Never guess architecture from repository names
+    # or replace a known unsupported architecture with a supported parent.
+    if isinstance(base, str) and (fallback or (result["supported"] and result["parameters_b"] is None)):
+        try:
+            parent = _load_model_once(base, token, stage, (*visited, repo_id))
+            if parent["supported"] and (result["architecture"] == "unknown" or parent["architecture"] == result["architecture"]):
+                fields = ("layers", "kv_heads", "head_dim", "context_limit", "parameters_b")
+                inherited = []
+                for field in fields:
+                    if result[field] is None and parent[field] is not None:
+                        result[field] = parent[field]
+                        inherited.append(field)
+                if result["architecture"] == "unknown":
+                    result["architecture"] = parent["architecture"]
+                    result["supported"] = True
+                result["provenance"]["base_model"] = {"repo_id": base, "revision": parent["provenance"].get("revision"), "inherited_fields": inherited}
+                if "parameters_b" in inherited:
+                    result["provenance"]["parameters"] = f"Declared base model: {base}"
+                result["warnings"].append("Missing fields use the repository's declared base model; custom modifications may differ.")
+        except MetadataError:
+            pass
+        except Exception:
+            pass  # Existing public metadata remains useful if a parent is unavailable.
+    if fallback:
+        result["provenance"]["architecture"] = "Public Hub API metadata (configuration unavailable)"
+        result["warnings"].append("Using public metadata without a token. Missing attention dimensions use illustrative defaults; context capacity is approximate.")
+    if result["parameters_b"] is not None:
+        result["warnings"] = [w for w in result["warnings"] if not w.startswith(("Parameter count is unavailable", "Quantized repository:"))]
+    if result["supported"]:
+        result["warnings"] = [w for w in result["warnings"] if not w.startswith("This architecture is unsupported")]
+    if all(result[k] for k in ("layers", "kv_heads", "head_dim")):
+        result["warnings"] = [w for w in result["warnings"] if not w.startswith("Attention dimensions")]
+    return result
 
 
 def load_model(repo_id, token=None):

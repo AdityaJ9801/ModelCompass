@@ -79,6 +79,19 @@ Hosting requires no GPU or shared Hugging Face token. Public metadata is cached 
 
 ### Restricted models such as Meta Llama
 
+The loader first tries configuration metadata and can recover from missing or
+restricted configuration files using public Hub metadata, including GGUF parameter
+counts and context limits. It follows a single explicitly declared base model
+(up to three repositories, with cycle protection) to fill missing fields. Sources
+and inherited fields appear under **Metadata sources and estimation notes**.
+
+For example, `bartowski/gemma-2-9b-it-GGUF` loads publicly without a token using
+its published 9.2417B parameter count and 8192-token limit. Its public API does
+not supply all attention dimensions, so cache/context-capacity estimates still
+use clearly labeled illustrative values until those fields are verified. This
+fallback does not bypass gated files or imply support for arbitrary MoE or
+multimodal architectures. Unsupported selections keep the current calculation.
+
 1. Open the model's Hugging Face page, accept its terms, and obtain any required access approval.
 2. Create a read token with access to that repository in your own Hugging Face account.
 3. Expand **Search Hugging Face**, enter it in the **Hugging Face access token** password field, then select **Use this model**.

@@ -24,12 +24,13 @@ def memory(value):
 def hub_picker():
     with st.expander("Search Hugging Face — optional"):
         st.caption("Public text-generation models only. We read small metadata files, never model weights.")
-        st.markdown("**Restricted-model access — optional**")
-        st.caption("For gated models such as Llama, accept the publisher's terms and receive access approval on Hugging Face first. A token alone does not grant access. Use a read token from your approved account; it is sent to this app's server for this session only.")
-        st.text_input("Hugging Face access token", type="password", key="hf_token",
-                      on_change=forget_authenticated_model, args=(st.session_state,))
-        st.button("Clear token", key="clear_token", on_click=clear_access, args=(st.session_state,))
-        st.caption("Search remains public. Authenticated model details stay in this session and are excluded from shared caches and downloads.")
+        with st.popover("Restricted-model access — optional"):
+            st.markdown("**Restricted-model access — optional**")
+            st.caption("For gated models such as Llama, accept the publisher's terms and receive access approval on Hugging Face first. A token alone does not grant access. Use a read token from your approved account; it is sent to this app's server for this session only.")
+            st.text_input("Hugging Face access token", type="password", key="hf_token",
+                          on_change=forget_authenticated_model, args=(st.session_state,))
+            st.button("Clear token", key="clear_token", on_click=clear_access, args=(st.session_state,))
+            st.caption("Search remains public. Authenticated model details stay in this session and are excluded from shared caches and downloads.")
         with st.form("hub_search"):
             query = st.text_input("Model name or keyword", placeholder="e.g. Llama, Qwen, Gemma")
             a, b, c = st.columns(3)
@@ -60,6 +61,8 @@ def hub_picker():
                 try:
                     with st.spinner("Reading model specifications…"):
                         meta, authenticated = load_for_session(selected, st.session_state.get("hf_token"), cached_load, load_model)
+                    if not meta["supported"]:
+                        raise MetadataError("This model uses an architecture the calculator cannot estimate reliably yet. Choose a dense text model; your current inputs have been kept.", "unsupported")
                     st.session_state.metadata = meta
                     st.session_state.metadata_authenticated = authenticated
                     if meta["supported"]:
@@ -88,8 +91,11 @@ def model_inputs():
     meta = st.session_state.get("metadata")
     if meta:
         st.info(f"Selected repository: {meta['repo_id']}")
-        for warning in meta["warnings"]:
-            st.warning(warning)
+        if meta["warnings"]:
+            with st.expander("Metadata sources and estimation notes"):
+                for warning in meta["warnings"]:
+                    st.write(warning)
+                st.json(meta["provenance"])
         st.caption(f"License: {meta['license'] or 'not supplied'} · Architecture: {meta['architecture']}")
         st.caption(f"Repository quantization: {meta['quantization'] or 'not specified'}. Your precision selection below is a planning scenario, not confirmation of an available artifact.")
         if st.button("Clear selected model and use manual entry"):
